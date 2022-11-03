@@ -1,0 +1,367 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var India1 = ee.FeatureCollection("users/gprasun/India"),
+    geometry = 
+    /* color: #d63000 */
+    /* shown: false */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[65.259151739985, 38.31868704132198],
+          [65.259151739985, 6.111441400732002],
+          [99.448604864985, 6.111441400732002],
+          [99.448604864985, 38.31868704132198]]], null, false);
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+var season = "Kharif";
+
+var LUEyear = "projects/ee-gprasun/assets/LUEK2001";
+var Tmin = "projects/ee-gprasun/assets/TminK2001"; 
+var Tmax = "projects/ee-gprasun/assets/TmaxK2001";
+var Topt = "projects/ee-gprasun/assets/ToptK2001";
+var startYear = 2001
+
+var startKhMonth = 6; var endKhMonth = 11; ///////////////// Need to change for Rabi season
+var startDay = 1; var endDay = 2;
+var startDateL = ee.Date.fromYMD(startYear, startKhMonth, startDay);
+var endDateL = ee.Date.fromYMD(ee.Number(startYear), endKhMonth, endDay);
+print("Period of calculation", startDateL, endDateL);
+
+///////////////////// Common call to sync with MODIS //////////////////////
+    var modis = ee.ImageCollection('MODIS/006/MOD13A1') .filterDate(startDateL, endDateL);//print('modis', modis)
+    var dateString = ee.Date(modis.get('system:time_start')).format('yyyy-MM-dd');
+    var range = modis.reduceColumns(ee.Reducer.minMax(), ["system:time_start"]);
+    var mn = (ee.Date(range.get('min')));var mx = ee.Date(range.get('max'));//print('min', mn, 'max', mx);
+    var min = modis.first().get('system:time_start');var no = 1296000000; // 15 days in millis
+    var date = ee.Number.expression('a - b', {a: min, b: no});
+    var startDate = ee.Date(date); var endDate = mx;
+print('StartDate',startDate, 'Énddate', endDate);
+    var weekDifference = ee.Date(startDate).advance(16, 'day').millis().subtract(ee.Date(startDate).millis());
+    var listMap = ee.List.sequence(ee.Date(startDate).millis(), ee.Date(endDate).millis(), weekDifference);
+    
+///////////////////////////////////////////////////////////////////////
+    var clipper = function(image){
+  return image.clip(India1); };
+  
+////////////////////////////    fPAR   ///////////////////////////////
+function get16dayNDVIcomposite(date) {
+   var NDVI = ee.ImageCollection('MODIS/006/MOD13A1').select('NDVI')
+                      .filterBounds(geometry).map(clipper)
+                      .filterDate(date, date.advance(16, 'day'));
+var composite = NDVI.mean()
+      .set('system:time_start', date.millis(), 'dateYMD', date.format('YYYY-MM-dd'), 'numbImages', NDVI.size());
+      return composite;
+}
+    var NDVI = ee.ImageCollection.fromImages(listMap.map(function(dateMillis){
+  var date = ee.Date(dateMillis);
+  return get16dayNDVIcomposite(date);
+}));
+    var calculatefPAR = function(image) {                         ///// fPAR calculaton
+  var dateString = ee.Date(image.get('system:time_start')).format('yyyy-MM-dd');
+  var fPAR = image.expression('(ndvi * a * b) - c',{'ndvi': image,'a' : 0.0001, 'b': 1.24,'c' : 0.168})
+  .copyProperties(image, ["system:time_start", "dateYMD"]);
+  return fPAR;
+  };
+    var fPARcollection = NDVI.map(calculatefPAR); print('fPARcollection', fPARcollection)
+    /*var stackCollection = function(collection) {              ///// image list to multi-band image
+var first = ee.Image(collection.first()).select([]);
+var appendBands = function(image, previous) {
+      var dateString = ee.Date(image.get('system:time_start')).format('yyyy-MM-dd');
+      return ee.Image(previous).addBands(image);
+  };
+  return ee.Image(collection.iterate(appendBands, first));
+};
+    var fPAR = stackCollection(fPARcollection);
+print("fPAR 16 days",fPAR);
+*/
+
+
+/////////////////////////////////// PAR /////////////////////////////////////////////
+function get16dayssRadcomposite(date) {
+    var sRad3hrs = ee.ImageCollection('SNU/ESL/BESS/Rad/v1').select('PAR_Daily')
+                      .filterBounds(geometry).map(clipper)
+                      .filterDate(date, date.advance(16, 'day'));
+  var composite = sRad3hrs.sum()
+      .set('system:time_start', date.millis(), 'dateYMD', date.format('YYYY-MM-dd'), 'numbImages', sRad3hrs.size());
+      return composite;
+}
+    var sRad3hrs1 = ee.ImageCollection.fromImages(listMap.map(function(dateMillis){
+    var date = ee.Date(dateMillis);
+  return get16dayssRadcomposite(date);
+})); print(sRad3hrs1);
+
+   /* var stackCollection = function(collection) {
+var first = ee.Image(collection.first()).select([]);
+var appendBands = function(image, previous) {
+      var dateString = ee.Date(image.get('system:time_start')).format('yyyy-MM-dd');
+      return ee.Image(previous).addBands(image);
+  };
+  return ee.Image(collection.iterate(appendBands, first));
+};
+    var sRad3hrs_img = stackCollection(sRad3hrs1);*/
+    var calculateMJ = function(image){
+                  var MJ = image.expression(
+                    '(Sr * Sc * Fc1 * Fc2 * Fc3)',
+                    {'Sr': image, 'Sc': 0.001, 'Fc1': 1, 'Fc2': 86.4, 'Fc3': 1})
+                    //(Sc = W to KW, Fc1 = daily observation, Fc2 = KW to MJ, Fc3 = sRad to PAR) post GLDAS change
+                    return MJ.copyProperties(image, ["system:time_start", "dateYMD"])}
+    var PAR  = sRad3hrs1.map(calculateMJ);
+print("PAR",PAR);
+
+/////////////////////////////////// TScalar /////////////////////////////////////////////
+function get16daysTmin2mcomposite(date) {
+    var Tmin2m = ee.ImageCollection('ECMWF/ERA5/DAILY').select('minimum_2m_air_temperature')
+                      .filterBounds(geometry).map(clipper)
+                      .filterDate(date, date.advance(16, 'day'));
+      var composite = Tmin2m.mean()
+      .set('system:time_start', date.millis(), 'dateYMD', date.format('YYYY-MM-dd'), 'numbImages', Tmin2m.size());
+      return composite;}
+    var Tmin2m1 = ee.ImageCollection.fromImages(listMap.map(function(dateMillis){
+  var date = ee.Date(dateMillis);
+  return get16daysTmin2mcomposite(date);
+}));
+function get16daysTmax2mcomposite(date) {
+   var Tmax2m = ee.ImageCollection('ECMWF/ERA5/DAILY').select('maximum_2m_air_temperature')
+                      .filterBounds(geometry).map(clipper)
+                      .filterDate(date, date.advance(16, 'day'));
+      var composite = Tmax2m.mean()
+      .set('system:time_start', date.millis(), 'dateYMD', date.format('YYYY-MM-dd'), 'numbImages', Tmax2m.size());
+      return composite;
+}
+    var Tmax2m1 = ee.ImageCollection.fromImages(listMap.map(function(dateMillis){
+    var date = ee.Date(dateMillis);
+  return get16daysTmax2mcomposite(date);
+})); //print('Tmin_2m', Tmin2m1);print('Tmax_2m', Tmax2m1);
+    var mod1 = Tmin2m1; var mod2 = Tmax2m1
+    var filter = ee.Filter.equals({
+  leftField: 'system:time_start',
+  rightField: 'system:time_start'
+});
+    var simpleJoin = ee.Join.inner();
+    var innerJoin = ee.ImageCollection(simpleJoin.apply(mod1, mod2, filter))
+    var joined = innerJoin.map(function(feature) {
+  return ee.Image.cat(feature.get('primary'), feature.get('secondary'))
+  });// print('Joined', joined)
+    var TDmean = function(B1,B2){
+                var wrap = function(Im){
+                var Tmn = Im.select(B1)
+                var Tmx = Im.select(B2)
+                return (((Tmn.add(Tmx)).divide(2)).add(Tmx)).divide(2).copyProperties(Im, ["system:time_start", "dateYMD"]);}
+                return wrap}
+    var meanTday = joined.map(TDmean('minimum_2m_air_temperature', 'maximum_2m_air_temperature' )); //print('meanTday', meanTday)
+    var calculateTsc = function(image){
+                  var Tsc = image.expression(
+                    '((T - Tmin) * (T - Tmax))/(((T - Tmin) * (T - Tmax)) - ((T - Topt)*(T - Topt)))', 
+                    /// recalculate based on C3 C4
+                    {'T': image, 'Tmin': Tmin, 'Tmax': Tmax, 'Topt': Topt})
+                    return Tsc.copyProperties(image, ["system:time_start", "dateYMD"])}
+    var TScalar  = meanTday.map(calculateTsc)//.rename('T_scalar)')
+print('TScalar', TScalar)
+    var tsstackCollection = function(twscollection) {
+    var id = id
+   var first = ee.Image(TScalar.first()).select([]);
+    var appendBands = function(image, previous) {
+    return ee.Image(previous).addBands(image);
+  };
+  return ee.Image(TScalar.iterate(appendBands, first));
+};
+    var tsstacked = tsstackCollection(TScalar);//print('stacked TScalar', tsstacked)
+/////////////////////////////////// WScalar /////////////////////////////////////////////
+function get16daysb2composite(date) {
+   var B2band = ee.ImageCollection('MODIS/006/MOD09A1').select('sur_refl_b02')
+                      .filterBounds(geometry).map(clipper)
+                      .filterDate(date, date.advance(16, 'day'));
+      var composite = B2band.mean()
+      .set('system:time_start', date.millis(), 'dateYMD', date.format('YYYY-MM-dd'), 'numbImages', B2band.size());
+      return composite;}
+    var b2 = ee.ImageCollection.fromImages(listMap.map(function(dateMillis){
+    var date = ee.Date(dateMillis);
+  return get16daysb2composite(date);
+}));
+    var stackCollection = function(collection) {
+var first = ee.Image(collection.first()).select([]);
+var appendBands = function(image, previous) {
+      var dateString = ee.Date(image.get('system:time_start')).format('yyyy-MM-dd');
+      return ee.Image(previous).addBands(image);
+  };
+  return ee.Image(collection.iterate(appendBands, first));
+};
+    var b2Stack= stackCollection(b2);
+function get16daysb6composite(date) {
+   var B6band = ee.ImageCollection('MODIS/006/MOD09A1').select('sur_refl_b06')
+                      .filterBounds(geometry).map(clipper)
+                      .filterDate(date, date.advance(16, 'day'));    var composite = B6band.mean()
+      .set('system:time_start', date.millis(), 'dateYMD', date.format('YYYY-MM-dd'), 'numbImages', B6band.size());
+      return composite;}
+    var b6 = ee.ImageCollection.fromImages(listMap.map(function(dateMillis){
+  var date = ee.Date(dateMillis);
+  return get16daysb6composite(date);
+}));
+    var stackCollection = function(collection) {
+var first = ee.Image(collection.first()).select([]);
+var appendBands = function(image, previous) {
+      var dateString = ee.Date(image.get('system:time_start')).format('yyyy-MM-dd');
+      return ee.Image(previous).addBands(image);
+  };
+  return ee.Image(collection.iterate(appendBands, first));
+};
+    var b6Stack= stackCollection(b6); //print('B2', b2Stack); print('B6', b6Stack)
+    var modw1 = b2; var modw2 = b6;
+    var filterw = ee.Filter.equals({
+  leftField: 'system:time_start',
+  rightField: 'system:time_start'
+});
+    var simpleJoinw = ee.Join.inner();
+    var innerJoinw = ee.ImageCollection(simpleJoinw.apply(modw1, modw2, filterw))
+    var joinedw = innerJoinw.map(function(feature) {
+  return ee.Image.cat(feature.get('primary'), feature.get('secondary'));
+}); //print('Joined', joinedw)
+    var lswi = function(B1,B2){
+                var wrap = function(Im){
+                var Btwo = Im.select(B1)
+                var Bsix = Im.select(B2)
+                return Btwo.subtract(Bsix).divide(Btwo.add(Bsix)).copyProperties(Im, ["system:time_start", "dateYMD"]);}
+                return wrap
+                }
+    var lswi16 = joinedw.map(lswi('sur_refl_b02', 'sur_refl_b06')); //print('lswi16',lswi16)
+    var lswiMax = lswi16.reduce(ee.Reducer.max()); /////////// LSWImax
+    var calculateWS = function(img) {
+    var ws = img.expression(
+    '(a + LSWI)/(a + LSWImx)',
+    {'a' : 1.0, 'LSWI' : img, 'LSWImx' : lswiMax});
+    return ws.copyProperties(img, ["system:time_start", "dateYMD"])
+};
+    var wscollection = lswi16.map(calculateWS);
+print('WScalar', wscollection)
+    var wsstackCollection = function(wscollection) {
+    var first = ee.Image(wscollection.first()).select([]);
+    var appendBands = function(image, previous) {
+    return ee.Image(previous).addBands(image);
+  };
+  return ee.Image(wscollection.iterate(appendBands, first));
+};
+    var wsstacked = wsstackCollection
+    
+/////////////////////////////////// Emax /////////////////////////////////////////////
+    var modE1 = TScalar; var modE2 = wscollection;
+    var filterE = ee.Filter.equals({
+  leftField: 'system:time_start',
+  rightField: 'system:time_start'
+});
+    var simpleJoinE = ee.Join.inner();
+    var innerJoinE = ee.ImageCollection(simpleJoinE.apply(modE1, modE2, filterE))
+    var joinedE = innerJoinE.map(function(feature) {
+  return ee.Image.cat(feature.get('primary'), feature.get('secondary'));
+}); //print('JoinedE', joinedE)
+    var eMaxCalc = function(B1, B2, B3){
+                  var wrap = function(Im){
+                    var WS = Im.select(B1)
+                    var TS = Im.select(B2)
+                    var LUE = LUEyear
+                    return ((WS.multiply(TS)).multiply(LUE)).copyProperties(Im, ["system:time_start", "dateYMD"]);}
+                    return wrap}
+    var eMax = joinedE.map(eMaxCalc('minimum_2m_air_temperature', 'constant', 'LUM2001'))
+print('LUEmax', eMax)
+/////////////////////////////////// GPP /////////////////////////////////////////////
+// bringing variables together
+    var modG1 = fPARcollection; var modG2 = eMax;
+    var filterG = ee.Filter.equals({
+  leftField: 'system:time_start',
+  rightField: 'system:time_start'
+});
+    var simpleJoinG = ee.Join.inner();
+    var innerJoinG = ee.ImageCollection(simpleJoinG.apply(modG1, modG2, filterG))
+    var joinedGp1 = innerJoinG.map(function(feature) {
+  return ee.Image.cat(feature.get('primary'), feature.get('secondary'));
+    }); //print('JoinedGp1', joinedGp1)
+    var modG3 = joinedGp1; var modG4 = PAR;
+    var filterG1 = ee.Filter.equals({
+  leftField: 'system:time_start',
+  rightField: 'system:time_start'
+});
+    var simpleJoinG1 = ee.Join.inner();
+    var innerJoinG1 = ee.ImageCollection(simpleJoinG1.apply(modG3, modG4, filterG1))
+    var joinedG2 = innerJoinG1.map(function(feature) {
+  return ee.Image.cat(feature.get('primary'), feature.get('secondary'));
+    }); //print('JoinedG2', joinedG2)
+    var GPPCalc = function(B1, B2, B3){
+                  var wrap = function(Im){
+                    var fPAR = Im.select(B1)
+                    var eMax = Im.select(B2)
+                    var PAR  = Im.select(B3)
+                  return ((((fPAR.multiply(eMax)).multiply(PAR)))/*.multiply(10000)*/).copyProperties(Im, ["system:time_start", "dateYMD"]);}
+                  return wrap}
+   var GPP = joinedG2.map(GPPCalc('NDVI', 'minimum_2m_air_temperature', 'PAR_Daily')); //print('GPP', GPP) ///////////////////////////////////////
+    var gppCollection = function(collection) {              ///// image list to multi-band image
+    var first = ee.Image(collection.first()).select([]);
+    var appendBands = function(image, previous) {
+      var dateString = ee.Date(image.get('system:time_start')).format('yyyy-MM-dd');
+      return ee.Image(previous).addBands(image);
+  };
+  return ee.Image(collection.iterate(appendBands, first));
+};
+    var gppSum = GPP.sum().rename('GPP_Kharif_'+ startYear)
+    var gppStack = gppCollection(GPP);
+
+//var mask = cropland.eq(1); 
+//var agriGPP = gppSum.multiply(mask);
+print("GPP", gppSum);
+var filtered = gppSum.gt(1);
+var gppFiltered = gppSum.multiply(filtered);
+//var theMin = agriGPP.reduceRegion({reducer: ee.Reducer.min(),geometry: India, scale: 500,maxPixels: 1e9}); 
+//print(theMin)
+
+Export.image.toDrive({
+  image: gppFiltered.int(),
+  description: 'MODIS_GPP_'+ season + '_'+ startYear +'SBSS',
+  scale: 500, crs: 'EPSG:4326', region: geometry, fileFormat: 'GeoTIFF', folder: 'calculated_GPP_noMask', maxPixels:10000000000000,
+  formatOptions: {
+    cloudOptimized: true}})
+ /*
+ var theMax = agriGPP.reduceRegion({reducer: ee.Reducer.max(),geometry: India.geometry(), scale: 500,maxPixels: 1e9}); / 
+ var theMin = agriGPP.reduceRegion({reducer: ee.Reducer.min(),geometry: India.geometry(), scale: 500,maxPixels: 1e9}); 
+print('Max GPP', theMax, 'Min GPP', theMin);
+ */
+
+
+//Map.addLayer(mask);
+var tVis = { min: 0.0, max: 1500.0, palette: [ '#000080', '#0000D9', '#4000FF', '#8000FF', '#0080FF', '#00FFFF', '#00FF80',
+     '#80FF00', '#DAFF00', '#FFFF00', '#FFF500', '#FFDA00', '#FFB000', '#FFA400',
+     '#FF4F00', '#FF2500', '#FF0A00', '#FF00FF'
+   ]}; Map.addLayer(gppFiltered, tVis)
+
+// // set position of panel
+// var legend = ui.Panel({
+// style: {position: 'middle-left', padding: '8px 15px'}});
+// // Create legend title
+// var legendTitle = ui.Label({ value: 'GPP gm/m2 - Kharif' + startYear ,
+// style: {fontWeight: 'bold', fontSize: '12px', margin: '0 0 4px 0',
+// padding: '0' }});
+// // Add the title to the panel
+// legend.add(legendTitle);
+// // create the legend image
+// var lon = ee.Image.pixelLonLat().select('latitude');
+// var gradient = lon.multiply((tVis.max-tVis.min)/100.0).add(tVis.min);
+// var legendImage = gradient.visualize(tVis);
+// // create text on top of legend
+// var panel = ui.Panel({
+// widgets: [
+// ui.Label(tVis['max']) ],});
+// legend.add(panel);
+// // create thumbnail from the image
+// var thumbnail = ui.Thumbnail({
+// image: legendImage,
+// params: {bbox:'0,0,10,100', dimensions:'10x200'},
+// style: {padding: '1px', position: 'bottom-center'}
+// });
+// // add the thumbnail to the legend
+// legend.add(thumbnail);
+// // create text on top of legend
+// var panel = ui.Panel({ 
+// widgets: [
+// ui.Label(tVis['min'])
+// ],
+// });
+// legend.add(panel);
+// Map.add(legend);
